@@ -12,11 +12,11 @@ import android.view.WindowManager
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleRegistry
-import androidx.lifecycle.ViewTreeLifecycleOwner
+import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
-import androidx.savedstate.ViewTreeSavedStateRegistryOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 
 /** مالک چرخه‌عمر برای ComposeView ای که داخل Activity نیست (پنجره‌ی روی سایر برنامه‌ها) */
 class OverlayOwner : SavedStateRegistryOwner {
@@ -60,8 +60,8 @@ class OverlayService : Service() {
         owner.resume()
 
         val view = ComposeView(this)
-        ViewTreeLifecycleOwner.set(view, owner)
-        ViewTreeSavedStateRegistryOwner.set(view, owner)
+        view.setViewTreeLifecycleOwner(owner)
+        view.setViewTreeSavedStateRegistryOwner(owner)
         view.setContent {
             AppTheme { TxnEditor(id) { handler.post { close(id) } } }
         }
