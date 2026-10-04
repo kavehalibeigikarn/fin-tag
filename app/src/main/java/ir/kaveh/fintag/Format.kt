@@ -22,7 +22,7 @@ fun formatDate(ms: Long): String {
 
 /** شروع ماه شمسی جاری */
 fun monthStart(now: Long = System.currentTimeMillis()): Long {
-    val c = android.icu.util.PersianCalendar()
+    val c = android.icu.util.Calendar.getInstance(android.icu.util.ULocale("fa_IR@calendar=persian"))
     c.timeInMillis = now
     c.set(android.icu.util.Calendar.DAY_OF_MONTH, 1)
     c.set(android.icu.util.Calendar.HOUR_OF_DAY, 0)
