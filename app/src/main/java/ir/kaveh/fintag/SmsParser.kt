@@ -48,7 +48,7 @@ object SmsParser {
 
         val balMatch = balRe.find(tl)
         val balRange = balMatch?.groups?.get(1)?.range
-        val balance = balMatch?.groups?.get(1)?.value?.let { toLong(it) }
+               if (balance == null) return null
 
         val cands = numRe.findAll(tl)
             .filter { m -> balRange == null || m.range.first !in balRange }
