@@ -437,10 +437,11 @@ fun TxnEditor(
                 }
             }
 
-            Column(
-                Modifier.padding(18.dp).verticalScroll(rememberScrollState()),
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+              Column(
+                Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
+              ) {
                 // سربرگ
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -535,6 +536,8 @@ fun TxnEditor(
                     onAdd = { addNew() }
                 )
 
+              }
+                // نوار دکمه‌ها ثابت است و با اسکرول فرم پایین نمی‌رود
                 if (confirmDelete) {
                     Surface(color = Expense.copy(alpha = 0.10f), shape = RoundedCornerShape(14.dp)) {
                         Row(
@@ -605,6 +608,7 @@ fun TxnEditor(
                                         }
                                         dao.updateTxn(updated)
                                         Notifier.cancel(ctx, t.id)
+                                        android.widget.Toast.makeText(ctx, "ذخیره شد ✓", android.widget.Toast.LENGTH_SHORT).show()
                                         onFinish()
                                     }
                                 }

@@ -232,9 +232,9 @@ fun MainScreen(tick: Int) {
     editId?.let { id ->
         Dialog(
             onDismissRequest = { editId = null },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
         ) {
-            Box(Modifier.padding(16.dp)) { TxnEditor(id, full = true) { editId = null } }
+            Box(Modifier.safeDrawingPadding().padding(16.dp)) { TxnEditor(id, full = true) { editId = null } }
         }
     }
     if (showAdd) {
@@ -748,11 +748,14 @@ fun SettingsTab(
     }
     val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
     val selectedName = stats.firstOrNull { it.account.id == selectedAccId }?.account?.name
+    val versionName = remember {
+        try { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "" } catch (e: Exception) { "" }
+    }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
         GradientHeader {
             Text("تنظیمات", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            Text("حساب‌ها، اکسل، مجوزها و برچسب‌ها", color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp)
+            Text("حساب‌ها، اکسل، مجوزها و برچسب‌ها  •  نسخه " + toFa(versionName), color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp)
         }
         Spacer(Modifier.height(8.dp))
 

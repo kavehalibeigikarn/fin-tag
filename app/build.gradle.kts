@@ -13,8 +13,17 @@ android {
         applicationId = "ir.kaveh.fintag"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 5
+        versionName = "5"
+    }
+    signingConfigs {
+        // کلید ثابت: همه‌ی نسخه‌ها با یک امضا ساخته می‌شوند تا نصب روی نسخه‌ی قبلی بدون پاک‌شدن اطلاعات انجام شود
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
     buildTypes {
         release { isMinifyEnabled = false }
