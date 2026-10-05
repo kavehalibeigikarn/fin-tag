@@ -15,6 +15,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -111,16 +112,82 @@ fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     }
 }
 
+// ───────────── انتخاب حساب (هر بانک یک صفحه) ─────────────
+@Composable
+private fun AccountCard(name: String, balance: Long, selected: Boolean, toman: Boolean, onClick: () -> Unit) {
+    Card(
+        onClick = onClick,
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surface
+        ),
+        border = if (selected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null,
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(
+            Modifier.widthIn(min = 110.dp).padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(name, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
+            Text(formatMoney(balance, toman), fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+        }
+    }
+}
+
+@Composable
+fun AccountBar(stats: List<AccountStat>, selected: Long, toman: Boolean, onSelect: (Long) -> Unit) {
+    if (stats.isEmpty()) {
+        Text(
+            "هنوز حسابی ثبت نشده. با اولین پیامک هر بانک، حساب آن خودکار ساخته می‌شود؛ یا از تنظیمات حساب اضافه کن.",
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.outline
+        )
+    } else {
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            stats.forEach { s ->
+                AccountCard(s.account.name, s.balance, selected == s.account.id, toman) { onSelect(s.account.id) }
+            }
+            if (stats.size > 1) {
+                AccountCard("همه حساب‌ها", stats.sumOf { it.balance }, selected == 0L, toman) { onSelect(0L) }
+            }
+        }
+    }
+}
+
 // ───────────── صفحه‌ی اصلی ─────────────
 @Composable
 fun MainScreen(tick: Int) {
     val ctx = LocalContext.current
     val dao = remember { AppDb.get(ctx).dao() }
     val txns by dao.observeTxns().collectAsState(initial = emptyList())
+    val accounts by dao.observeAccounts().collectAsState(initial = emptyList())
     var tab by remember { mutableIntStateOf(0) }
     var toman by remember { mutableStateOf(Prefs.toman(ctx)) }
     var editId by remember { mutableStateOf<Long?>(null) }
     var showAdd by remember { mutableStateOf(false) }
+    var accSel by remember { mutableLongStateOf(-1L) } // -1 = انتخاب نشده (حساب اول)، 0 = همه
+
+    val mStart = remember { monthStart() }
+    val stats = remember(accounts, txns) { accounts.map { computeStat(it, txns, mStart) } }
+    val accId: Long =
+        if (accSel == 0L) 0L
+        else accounts.firstOrNull { it.id == accSel }?.id ?: accounts.firstOrNull()?.id ?: 0L
+    val scoped = remember(txns, accId) {
+        if (accId == 0L) txns else txns.filter { it.accountId == accId }
+    }
+    val current = stats.firstOrNull { it.account.id == accId }
+
+    // تراکنش‌های قدیمی (بدون حساب) را به حساب‌ها نسبت بده
+    LaunchedEffect(txns) {
+        if (txns.any { it.accountId == 0L }) {
+            withContext(Dispatchers.IO) { Accounts.assignUnassigned(ctx.applicationContext) }
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -152,9 +219,9 @@ fun MainScreen(tick: Int) {
     ) { pad ->
         Box(Modifier.padding(bottom = pad.calculateBottomPadding())) {
             when (tab) {
-                0 -> HomeTab(txns, toman) { editId = it }
-                1 -> ReportTab(txns, toman)
-                else -> SettingsTab(tick, toman) { toman = it }
+                0 -> HomeTab(scoped, stats, accId, current, toman, onSelect = { accSel = it }) { editId = it }
+                1 -> ReportTab(scoped, stats, accId, current, toman) { accSel = it }
+                else -> SettingsTab(tick, toman, stats, accId) { toman = it }
             }
         }
     }
@@ -169,6 +236,8 @@ fun MainScreen(tick: Int) {
     }
     if (showAdd) {
         ManualAddDialog(
+            accounts = accounts,
+            defaultAccountId = accId,
             onDismiss = { showAdd = false },
             onCreated = { showAdd = false; editId = it }
         )
@@ -177,7 +246,15 @@ fun MainScreen(tick: Int) {
 
 // ───────────── تب تراکنش‌ها ─────────────
 @Composable
-fun HomeTab(txns: List<Txn>, toman: Boolean, onOpen: (Long) -> Unit) {
+fun HomeTab(
+    txns: List<Txn>,
+    stats: List<AccountStat>,
+    accId: Long,
+    current: AccountStat?,
+    toman: Boolean,
+    onSelect: (Long) -> Unit,
+    onOpen: (Long) -> Unit
+) {
     var filter by remember { mutableIntStateOf(0) }
     var query by remember { mutableStateOf("") }
     val start = remember { monthStart() }
@@ -185,6 +262,11 @@ fun HomeTab(txns: List<Txn>, toman: Boolean, onOpen: (Long) -> Unit) {
     val income = month.filter { it.isIn() }.sumOf { it.amount }
     val expense = month.filter { !it.isIn() }.sumOf { it.amount }
     val pending = txns.count { !it.reviewed }
+
+    val title = current?.account?.name ?: "همه حساب‌ها"
+    val balance = current?.balance ?: stats.sumOf { it.balance }
+    val monthStartBalance = current?.monthStartBalance ?: stats.sumOf { it.monthStartBalance }
+    val lastSms = current?.lastSmsBalance
 
     val q = SmsParser.normalize(query).trim()
     val shown = txns.filter { t ->
@@ -207,22 +289,43 @@ fun HomeTab(txns: List<Txn>, toman: Boolean, onOpen: (Long) -> Unit) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("مدیریت مالی", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Text(title, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                     Text(monthTitle(), color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp)
                 }
-                Spacer(Modifier.height(18.dp))
-                Text("تراز این ماه", color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp)
-                Text(formatMoney(income - expense, toman), color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(16.dp))
+                Text("موجودی فعلی", color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp)
+                Text(formatMoney(balance, toman), color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "موجودی اول ماه: " + formatMoney(monthStartBalance, toman),
+                    color = Color.White.copy(alpha = 0.75f),
+                    fontSize = 12.sp
+                )
+                if (lastSms != null) {
+                    Text(
+                        "آخرین مانده‌ی پیامک بانک: " + formatMoney(lastSms, toman),
+                        color = if (lastSms == balance) Color.White.copy(alpha = 0.75f) else Color(0xFFFDE68A),
+                        fontSize = 12.sp
+                    )
+                }
+                if (current != null && current.account.openingBalance == 0L) {
+                    Text(
+                        "برای دقیق‌شدن موجودی، «موجودی اول دوره» را در تنظیمات ← حساب‌های بانکی وارد کن.",
+                        color = Color(0xFFFDE68A),
+                        fontSize = 11.sp
+                    )
+                }
                 Spacer(Modifier.height(14.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    StatBox("درآمد", income, toman, "↓", Color(0xFF86EFAC), Modifier.weight(1f))
-                    StatBox("هزینه", expense, toman, "↑", Color(0xFFFCA5A5), Modifier.weight(1f))
+                    StatBox("درآمد ماه", income, toman, "↓", Color(0xFF86EFAC), Modifier.weight(1f))
+                    StatBox("هزینه ماه", expense, toman, "↑", Color(0xFFFCA5A5), Modifier.weight(1f))
                 }
             }
         }
+        item { AccountBar(stats, accId, toman, onSelect) }
         item {
             Row(
-                Modifier.padding(top = 14.dp).horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+                Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 listOf("همه", "بدون توضیح (${toFa(pending.toString())})", "واریز", "برداشت").forEachIndexed { i, label ->
@@ -319,7 +422,14 @@ fun TxnRow(t: Txn, toman: Boolean, onClick: () -> Unit) {
 
 // ───────────── تب گزارش ─────────────
 @Composable
-fun ReportTab(list: List<Txn>, toman: Boolean) {
+fun ReportTab(
+    list: List<Txn>,
+    stats: List<AccountStat>,
+    accId: Long,
+    current: AccountStat?,
+    toman: Boolean,
+    onSelect: (Long) -> Unit
+) {
     var kind by remember { mutableIntStateOf(0) } // 0 = هزینه، 1 = درآمد
     val start = remember { monthStart() }
     val month = list.filter { it.time >= start }
@@ -338,17 +448,28 @@ fun ReportTab(list: List<Txn>, toman: Boolean) {
         item {
             GradientHeader {
                 Text("گزارش ماهانه", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Text(monthTitle(), color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp)
+                Text(
+                    (current?.account?.name ?: "همه حساب‌ها") + "  •  " + monthTitle(),
+                    color = Color.White.copy(alpha = 0.75f),
+                    fontSize = 13.sp
+                )
             }
         }
+        item { AccountBar(stats, accId, toman, onSelect) }
         item {
             Card(
-                Modifier.padding(horizontal = 16.dp, vertical = 12.dp).fillMaxWidth(),
+                Modifier.padding(horizontal = 16.dp, vertical = 4.dp).fillMaxWidth(),
                 shape = RoundedCornerShape(22.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
             ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (current != null) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("موجودی اول ماه")
+                            Text(formatMoney(current.monthStartBalance, toman), fontWeight = FontWeight.Bold)
+                        }
+                    }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("درآمد")
                         Text(formatMoney(income, toman), color = Income, fontWeight = FontWeight.Bold)
@@ -357,9 +478,7 @@ fun ReportTab(list: List<Txn>, toman: Boolean) {
                         Text("هزینه")
                         Text(formatMoney(expense, toman), color = Expense, fontWeight = FontWeight.Bold)
                     }
-                    Row(
-                        Modifier.fillMaxWidth().height(10.dp).clip(RoundedCornerShape(50))
-                    ) {
+                    Row(Modifier.fillMaxWidth().height(10.dp).clip(RoundedCornerShape(50))) {
                         if (income > 0) Box(Modifier.weight(income.toFloat()).fillMaxHeight().background(Income))
                         if (expense > 0) Box(Modifier.weight(expense.toFloat()).fillMaxHeight().background(Expense))
                         if (income == 0L && expense == 0L) {
@@ -368,7 +487,7 @@ fun ReportTab(list: List<Txn>, toman: Boolean) {
                     }
                     HorizontalDivider()
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("تراز", fontWeight = FontWeight.Bold)
+                        Text("تراز ماه", fontWeight = FontWeight.Bold)
                         Text(
                             formatMoney(income - expense, toman),
                             color = if (income >= expense) Income else Expense,
@@ -380,7 +499,7 @@ fun ReportTab(list: List<Txn>, toman: Boolean) {
         }
         item {
             Row(
-                Modifier.padding(horizontal = 16.dp),
+                Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 FilterChip(selected = kind == 0, onClick = { kind = 0 }, label = { Text("هزینه‌ها") }, shape = RoundedCornerShape(50))
@@ -439,7 +558,13 @@ fun ReportTab(list: List<Txn>, toman: Boolean) {
 
 // ───────────── تب تنظیمات ─────────────
 @Composable
-fun SettingsTab(tick: Int, toman: Boolean, onToman: (Boolean) -> Unit) {
+fun SettingsTab(
+    tick: Int,
+    toman: Boolean,
+    stats: List<AccountStat>,
+    selectedAccId: Long,
+    onToman: (Boolean) -> Unit
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val dao = remember { AppDb.get(ctx).dao() }
@@ -447,6 +572,8 @@ fun SettingsTab(tick: Int, toman: Boolean, onToman: (Boolean) -> Unit) {
     var popup by remember { mutableStateOf(Prefs.popup(ctx)) }
     var permTick by remember { mutableIntStateOf(0) }
     var newTagName by remember { mutableStateOf("") }
+    var editAcc by remember { mutableStateOf<Account?>(null) }
+    var newAcc by remember { mutableStateOf(false) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         permTick++
     }
@@ -469,9 +596,45 @@ fun SettingsTab(tick: Int, toman: Boolean, onToman: (Boolean) -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
         GradientHeader {
             Text("تنظیمات", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            Text("مجوزها، برچسب‌ها و نمایش", color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp)
+            Text("حساب‌ها، مجوزها و برچسب‌ها", color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp)
         }
         Spacer(Modifier.height(8.dp))
+
+        SectionCard("حساب‌های بانکی") {
+            if (stats.isEmpty()) {
+                Text(
+                    "هنوز حسابی ثبت نشده. با اولین پیامک هر بانک، حساب آن خودکار ساخته می‌شود.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.outline
+                )
+            }
+            stats.forEach { s ->
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(s.account.name, fontWeight = FontWeight.Bold)
+                        Text(
+                            "موجودی: " + formatMoney(s.balance, toman),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                        if (s.account.senders.isNotBlank()) {
+                            Text(
+                                "فرستنده: " + s.account.senders,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                    }
+                    OutlinedButton(onClick = { editAcc = s.account }, shape = RoundedCornerShape(50)) { Text("ویرایش") }
+                }
+                HorizontalDivider()
+            }
+            FilledTonalButton(onClick = { newAcc = true }, shape = RoundedCornerShape(14.dp)) { Text("＋ حساب جدید") }
+        }
 
         SectionCard("مجوزها") {
             PermRow("دریافت پیامک", smsOk) {
@@ -555,13 +718,21 @@ fun SettingsTab(tick: Int, toman: Boolean, onToman: (Boolean) -> Unit) {
                             String.format(Locale.US, "%,d", amt) + (if (inn) "+" else "-") +
                             "\nمانده: 12,450,000\n1405/07/12 14:35"
                         withContext(Dispatchers.IO) {
-                            Pipeline.handle(ctx.applicationContext, "TEST", body, System.currentTimeMillis(), force = true)
+                            Pipeline.handle(
+                                ctx.applicationContext, "TEST", body, System.currentTimeMillis(),
+                                force = true,
+                                forceAccountId = if (selectedAccId != 0L) selectedAccId else null
+                            )
                         }
                     }
                 },
                 shape = RoundedCornerShape(14.dp)
-            ) { Text("شبیه‌سازی یک پیامک بانکی") }
+            ) { Text("شبیه‌سازی یک پیامک بانکی (روی حساب انتخاب‌شده)") }
         }
+    }
+
+    if (editAcc != null || newAcc) {
+        AccountEditorDialog(account = editAcc) { editAcc = null; newAcc = false }
     }
 }
 
@@ -599,14 +770,170 @@ fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     }
 }
 
+// ───────────── ساخت / ویرایش حساب بانکی ─────────────
+@Composable
+fun AccountEditorDialog(account: Account?, onDismiss: () -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val dao = remember { AppDb.get(ctx).dao() }
+    val toman = remember { Prefs.toman(ctx) }
+
+    var name by remember { mutableStateOf(account?.name ?: "") }
+    var senders by remember { mutableStateOf(account?.senders ?: "") }
+    var hint by remember { mutableStateOf(account?.hint ?: "") }
+    var opening by remember {
+        mutableStateOf(
+            account?.let {
+                if (it.openingBalance == 0L) "" else (if (toman) it.openingBalance / 10 else it.openingBalance).toString()
+            } ?: ""
+        )
+    }
+    var period by remember { mutableIntStateOf(if (account == null) 2 else 0) }
+    var confirmDel by remember { mutableStateOf(false) }
+
+    val options = if (account == null) {
+        listOf(1 to "همه تراکنش‌ها", 2 to "ابتدای این ماه", 3 to "از همین لحظه")
+    } else {
+        listOf(0 to "بدون تغییر", 1 to "همه تراکنش‌ها", 2 to "ابتدای این ماه", 3 to "از همین لحظه")
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(24.dp),
+        title = { Text(if (account == null) "حساب جدید" else "ویرایش حساب", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedTextField(
+                    value = name, onValueChange = { name = it },
+                    label = { Text("نام حساب (مثلاً: ملت)") },
+                    singleLine = true, shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = senders, onValueChange = { senders = it },
+                    label = { Text("شماره/نام فرستنده‌ی پیامک") },
+                    supportingText = { Text("اگر چند شماره دارد با ویرگول جدا کن") },
+                    singleLine = true, shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = hint, onValueChange = { hint = it },
+                    label = { Text("بخشی از شماره حساب/کارت (اختیاری)") },
+                    supportingText = { Text("برای وقتی که چند حساب از یک بانک داری") },
+                    singleLine = true, shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = opening,
+                    onValueChange = { opening = SmsParser.normalize(it).filter { c -> c.isDigit() } },
+                    label = { Text(if (toman) "موجودی اول دوره (تومان)" else "موجودی اول دوره (ریال)") },
+                    singleLine = true, shape = RoundedCornerShape(14.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text("شروع دوره از:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    options.forEach { (code, label) ->
+                        FilterChip(
+                            selected = period == code,
+                            onClick = { period = code },
+                            label = { Text(label) },
+                            shape = RoundedCornerShape(50)
+                        )
+                    }
+                }
+                Text(
+                    "تراکنش‌های بعد از شروع دوره به موجودی اول دوره اضافه یا از آن کم می‌شوند؛ تراکنش‌های قبل‌تر در محاسبه نمی‌آیند.",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.outline
+                )
+                if (account != null) {
+                    if (confirmDel) {
+                        Surface(color = Expense.copy(alpha = 0.10f), shape = RoundedCornerShape(14.dp)) {
+                            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    "حساب و همه‌ی تراکنش‌های آن حذف می‌شود. مطمئنی؟",
+                                    color = Expense, fontWeight = FontWeight.Medium, fontSize = 12.sp
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    TextButton(onClick = { confirmDel = false }) { Text("خیر") }
+                                    Button(
+                                        onClick = {
+                                            scope.launch {
+                                                dao.deleteTxnsOfAccount(account.id)
+                                                dao.deleteAccountById(account.id)
+                                                onDismiss()
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Expense)
+                                    ) { Text("حذف حساب") }
+                                }
+                            }
+                        }
+                    } else {
+                        TextButton(onClick = { confirmDel = true }) { Text("🗑 حذف حساب", color = Expense) }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                if (name.isNotBlank()) {
+                    scope.launch {
+                        val v = SmsParser.normalize(opening).filter { it.isDigit() }.toLongOrNull() ?: 0L
+                        val ob = if (toman) v * 10 else v
+                        val ot = when (period) {
+                            0 -> account?.openingTime ?: 0L
+                            1 -> 0L
+                            2 -> monthStart()
+                            else -> System.currentTimeMillis()
+                        }
+                        if (account == null) {
+                            dao.insertAccount(
+                                Account(
+                                    name = name.trim(), senders = senders.trim(), hint = hint.trim(),
+                                    openingBalance = ob, openingTime = ot
+                                )
+                            )
+                        } else {
+                            dao.updateAccount(
+                                account.copy(
+                                    name = name.trim(), senders = senders.trim(), hint = hint.trim(),
+                                    openingBalance = ob, openingTime = ot
+                                )
+                            )
+                        }
+                        onDismiss()
+                    }
+                }
+            }) { Text("ذخیره") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("انصراف") } }
+    )
+}
+
 // ───────────── افزودن دستی ─────────────
 @Composable
-fun ManualAddDialog(onDismiss: () -> Unit, onCreated: (Long) -> Unit) {
+fun ManualAddDialog(
+    accounts: List<Account>,
+    defaultAccountId: Long,
+    onDismiss: () -> Unit,
+    onCreated: (Long) -> Unit
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val toman = remember { Prefs.toman(ctx) }
     var amount by remember { mutableStateOf("") }
     var isIn by remember { mutableStateOf(false) }
+    var accountId by remember {
+        mutableLongStateOf(if (defaultAccountId != 0L) defaultAccountId else accounts.firstOrNull()?.id ?: 0L)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -614,6 +941,21 @@ fun ManualAddDialog(onDismiss: () -> Unit, onCreated: (Long) -> Unit) {
         title = { Text("تراکنش دستی", fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (accounts.isNotEmpty()) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        accounts.forEach { a ->
+                            FilterChip(
+                                selected = a.id == accountId,
+                                onClick = { accountId = a.id },
+                                label = { Text(a.name) },
+                                shape = RoundedCornerShape(50)
+                            )
+                        }
+                    }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(selected = !isIn, onClick = { isIn = false }, label = { Text("برداشت") }, shape = RoundedCornerShape(50))
                     FilterChip(selected = isIn, onClick = { isIn = true }, label = { Text("واریز") }, shape = RoundedCornerShape(50))
@@ -638,7 +980,8 @@ fun ManualAddDialog(onDismiss: () -> Unit, onCreated: (Long) -> Unit) {
                                 type = if (isIn) "IN" else "OUT",
                                 amount = rial,
                                 sender = "manual",
-                                time = System.currentTimeMillis()
+                                time = System.currentTimeMillis(),
+                                accountId = accountId
                             )
                         )
                         onCreated(id)

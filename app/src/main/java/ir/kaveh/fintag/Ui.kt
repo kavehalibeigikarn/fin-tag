@@ -136,6 +136,8 @@ fun TxnEditor(
     var isIn by remember { mutableStateOf(false) }
     var amountText by remember { mutableStateOf("") }
     var confirmDelete by remember { mutableStateOf(false) }
+    var accountId by remember { mutableLongStateOf(0L) }
+    val accounts by dao.observeAccounts().collectAsState(initial = emptyList())
     val toman = remember { Prefs.toman(ctx) }
 
     LaunchedEffect(txnId) {
@@ -144,6 +146,7 @@ fun TxnEditor(
             note = it.note
             selected = it.tagList().toSet()
             isIn = it.isIn()
+            accountId = it.accountId
             amountText = (if (toman) it.amount / 10 else it.amount).toString()
         }
     }
@@ -188,7 +191,7 @@ fun TxnEditor(
                     Column(Modifier.weight(1f)) {
                         Text(if (isIn) "واریز" else "برداشت", color = color, fontWeight = FontWeight.Bold)
                         Text(
-                            formatDate(t.time),
+                            formatDate(t.time) + (accounts.firstOrNull { a -> a.id == accountId }?.let { a -> "  •  " + a.name } ?: ""),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.outline
                         )
@@ -207,8 +210,24 @@ fun TxnEditor(
                     )
                 }
 
-                // ویرایش نوع و مبلغ (فقط از داخل برنامه)
+                // ویرایش نوع و مبلغ و حساب (فقط از داخل برنامه)
                 if (full) {
+                    if (accounts.isNotEmpty()) {
+                        Text("حساب بانکی", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            accounts.forEach { a ->
+                                FilterChip(
+                                    selected = a.id == accountId,
+                                    onClick = { accountId = a.id },
+                                    label = { Text(a.name) },
+                                    shape = RoundedCornerShape(50)
+                                )
+                            }
+                        }
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(selected = !isIn, onClick = { isIn = false }, label = { Text("برداشت") }, shape = RoundedCornerShape(50))
                         FilterChip(selected = isIn, onClick = { isIn = true }, label = { Text("واریز") }, shape = RoundedCornerShape(50))
@@ -316,7 +335,8 @@ fun TxnEditor(
                                         var updated = t.copy(
                                             note = note.trim(),
                                             tags = tags.joinToString("|"),
-                                            reviewed = true
+                                            reviewed = true,
+                                            accountId = accountId
                                         )
                                         if (full) {
                                             val v = SmsParser.normalize(amountText).filter { it.isDigit() }.toLongOrNull()
