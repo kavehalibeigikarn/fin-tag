@@ -1,6 +1,6 @@
 fun TxnEditor(txnId: Long, onFinish: () -> Unit) {
 
-package ir.kaveh.fintag
+TextButton(onClick = onLater ?: onFinish) { Text("بعداً") }
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
