@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -47,6 +48,8 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.random.Random
 
@@ -255,9 +258,20 @@ fun HomeTab(
     onSelect: (Long) -> Unit,
     onOpen: (Long) -> Unit
 ) {
+    val ctx = LocalContext.current
+    val dao = remember { AppDb.get(ctx).dao() }
+    val allTags by dao.observeTags().collectAsState(initial = emptyList())
     var filter by remember { mutableIntStateOf(0) }
     var query by remember { mutableStateOf("") }
+    var showFilters by remember { mutableStateOf(false) }
+    var preset by remember { mutableIntStateOf(0) }       // 0 همه، 1 این ماه، 2 ماه قبل، 3 هفت روز اخیر، 4 دلخواه
+    var filterTags by remember { mutableStateOf(setOf<String>()) }
+    var customFrom by remember { mutableLongStateOf(0L) }
+    var customTo by remember { mutableLongStateOf(Long.MAX_VALUE) }
+
+    val now = System.currentTimeMillis()
     val start = remember { monthStart() }
+    val prevStart = remember { monthStart(start - 1) }
     val month = txns.filter { it.time >= start }
     val income = month.filter { it.isIn() }.sumOf { it.amount }
     val expense = month.filter { !it.isIn() }.sumOf { it.amount }
@@ -268,6 +282,14 @@ fun HomeTab(
     val monthStartBalance = current?.monthStartBalance ?: stats.sumOf { it.monthStartBalance }
     val lastSms = current?.lastSmsBalance
 
+    val range: Pair<Long, Long> = when (preset) {
+        1 -> start to Long.MAX_VALUE
+        2 -> prevStart to (start - 1)
+        3 -> (now - 7 * 86_400_000L) to Long.MAX_VALUE
+        4 -> customFrom to customTo
+        else -> 0L to Long.MAX_VALUE
+    }
+
     val q = SmsParser.normalize(query).trim()
     val shown = txns.filter { t ->
         val byFilter = when (filter) {
@@ -277,9 +299,12 @@ fun HomeTab(
             else -> true
         }
         val byQuery = q.isEmpty() || t.note.contains(q) || t.tags.contains(q) || t.amount.toString().contains(q)
-        byFilter && byQuery
+        val byTag = filterTags.isEmpty() || t.tagList().any { it in filterTags }
+        val byDate = t.time >= range.first && t.time <= range.second
+        byFilter && byQuery && byTag && byDate
     }
     val groups = shown.groupBy { formatDay(it.time) }
+    val filtersActive = filterTags.isNotEmpty() || preset != 0 || q.isNotEmpty()
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 96.dp)) {
         item {
@@ -336,6 +361,60 @@ fun HomeTab(
                         shape = RoundedCornerShape(50)
                     )
                 }
+                FilterChip(
+                    selected = showFilters || preset != 0 || filterTags.isNotEmpty(),
+                    onClick = { showFilters = !showFilters },
+                    label = { Text(if (showFilters) "▲ فیلتر تگ و تاریخ" else "🔎 فیلتر تگ و تاریخ") },
+                    shape = RoundedCornerShape(50)
+                )
+            }
+        }
+        if (showFilters) {
+            item {
+                Card(
+                    Modifier.padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("بازه‌ی زمانی", fontWeight = FontWeight.Bold)
+                        Row(
+                            Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf("همه", "این ماه", "ماه قبل", "۷ روز اخیر", "بازه‌ی دلخواه").forEachIndexed { i, label ->
+                                FilterChip(
+                                    selected = preset == i,
+                                    onClick = {
+                                        preset = i
+                                        if (i == 4 && customTo == Long.MAX_VALUE) {
+                                            customFrom = start
+                                            customTo = now
+                                        }
+                                    },
+                                    label = { Text(label) },
+                                    shape = RoundedCornerShape(50)
+                                )
+                            }
+                        }
+                        if (preset == 4) {
+                            Text("از تاریخ", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline)
+                            DateTimeEditor(initial = customFrom, withTime = false) { customFrom = it }
+                            Text("تا تاریخ", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline)
+                            DateTimeEditor(initial = customTo, withTime = false) { customTo = it + 86_399_999L }
+                        }
+                        Text("برچسب‌ها (تراکنش‌هایی که هر یک از تگ‌های انتخاب‌شده را دارند)", fontWeight = FontWeight.Bold)
+                        TagPicker(
+                            allTags = allTags,
+                            selected = filterTags,
+                            onToggle = { n -> filterTags = if (n in filterTags) filterTags - n else filterTags + n }
+                        )
+                        if (preset != 0 || filterTags.isNotEmpty()) {
+                            TextButton(onClick = { preset = 0; filterTags = emptySet() }) { Text("پاک کردن فیلترها") }
+                        }
+                    }
+                }
             }
         }
         item {
@@ -347,6 +426,43 @@ fun HomeTab(
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth()
             )
+        }
+        if (filtersActive) {
+            item {
+                val sumIn = shown.filter { it.isIn() }.sumOf { it.amount }
+                val sumOut = shown.filter { !it.isIn() }.sumOf { it.amount }
+                val net = sumIn - sumOut
+                Card(
+                    Modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("خلاصه‌ی نتیجه‌ی فیلتر", fontWeight = FontWeight.Bold)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("تعداد تراکنش")
+                            Text(toFa(shown.size.toString()), fontWeight = FontWeight.Bold)
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("جمع واریزها")
+                            Text(formatMoney(sumIn, toman), color = Income, fontWeight = FontWeight.Bold)
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("جمع برداشت‌ها")
+                            Text(formatMoney(sumOut, toman), color = Expense, fontWeight = FontWeight.Bold)
+                        }
+                        HorizontalDivider()
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("جمع جبری (واریز − برداشت)", fontWeight = FontWeight.Bold)
+                            Text(
+                                formatMoney(net, toman),
+                                color = if (net >= 0) Income else Expense,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
         }
         if (shown.isEmpty()) {
             item {
@@ -557,6 +673,8 @@ fun ReportTab(
 }
 
 // ───────────── تب تنظیمات ─────────────
+private const val XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
 @Composable
 fun SettingsTab(
     tick: Int,
@@ -574,8 +692,44 @@ fun SettingsTab(
     var newTagName by remember { mutableStateOf("") }
     var editAcc by remember { mutableStateOf<Account?>(null) }
     var newAcc by remember { mutableStateOf(false) }
+    var deleteAcc by remember { mutableStateOf<Account?>(null) }
+    var exportAcc by remember { mutableLongStateOf(0L) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         permTick++
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(XLSX_MIME)) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val msg = withContext(Dispatchers.IO) {
+                    try {
+                        ctx.contentResolver.openOutputStream(uri)?.use { Backup.export(ctx.applicationContext, it, exportAcc) }
+                        "فایل اکسل ذخیره شد."
+                    } catch (e: Exception) {
+                        "خطا در ذخیره‌ی فایل: " + (e.message ?: "")
+                    }
+                }
+                Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val msg = withContext(Dispatchers.IO) {
+                    try {
+                        val r = ctx.contentResolver.openInputStream(uri)?.use { Backup.import(ctx.applicationContext, it) }
+                        if (r == null) "فایل خوانده نشد."
+                        else "${toFa(r.added.toString())} تراکنش اضافه شد، " +
+                            "${toFa(r.duplicates.toString())} تراکنش تکراری نادیده گرفته شد، " +
+                            "${toFa(r.newAccounts.toString())} حساب جدید ساخته شد."
+                    } catch (e: Exception) {
+                        "خطا در خواندن فایل: " + (e.message ?: "")
+                    }
+                }
+                Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     val smsOk = remember(tick, permTick) {
@@ -592,11 +746,13 @@ fun SettingsTab(
         if (n.isNotEmpty()) scope.launch { dao.insertTag(Tag(n)) }
         newTagName = ""
     }
+    val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
+    val selectedName = stats.firstOrNull { it.account.id == selectedAccId }?.account?.name
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
         GradientHeader {
             Text("تنظیمات", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            Text("حساب‌ها، مجوزها و برچسب‌ها", color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp)
+            Text("حساب‌ها، اکسل، مجوزها و برچسب‌ها", color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp)
         }
         Spacer(Modifier.height(8.dp))
 
@@ -630,10 +786,40 @@ fun SettingsTab(
                         }
                     }
                     OutlinedButton(onClick = { editAcc = s.account }, shape = RoundedCornerShape(50)) { Text("ویرایش") }
+                    TextButton(onClick = { deleteAcc = s.account }) { Text("حذف", color = Expense) }
                 }
                 HorizontalDivider()
             }
             FilledTonalButton(onClick = { newAcc = true }, shape = RoundedCornerShape(14.dp)) { Text("＋ حساب جدید") }
+        }
+
+        SectionCard("اکسل و پشتیبان‌گیری") {
+            Text(
+                "فایل اکسل شامل حساب‌ها (با موجودی اول دوره)، تراکنش‌ها (با توضیح، تگ و تاریخ) و تگ‌هاست. " +
+                    "با «ورود از اکسل» همین فایل را روی نسخه‌ی جدید برنامه برمی‌گردانی؛ تراکنش‌های تکراری دوباره ثبت نمی‌شوند.",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.outline
+            )
+            if (selectedAccId != 0L && selectedName != null) {
+                Button(
+                    onClick = {
+                        exportAcc = selectedAccId
+                        exportLauncher.launch("FinTag-account-$stamp.xlsx")
+                    },
+                    shape = RoundedCornerShape(14.dp)
+                ) { Text("خروجی اکسل — فقط «$selectedName»") }
+            }
+            Button(
+                onClick = {
+                    exportAcc = 0L
+                    exportLauncher.launch("FinTag-all-$stamp.xlsx")
+                },
+                shape = RoundedCornerShape(14.dp)
+            ) { Text("خروجی اکسل — همه حساب‌ها") }
+            OutlinedButton(
+                onClick = { importLauncher.launch(arrayOf("*/*")) },
+                shape = RoundedCornerShape(14.dp)
+            ) { Text("ورود از فایل اکسل") }
         }
 
         SectionCard("مجوزها") {
@@ -734,6 +920,12 @@ fun SettingsTab(
     if (editAcc != null || newAcc) {
         AccountEditorDialog(account = editAcc) { editAcc = null; newAcc = false }
     }
+    deleteAcc?.let { acc ->
+        DeleteAccountDialog(
+            account = acc,
+            others = stats.map { it.account }.filter { it.id != acc.id }
+        ) { deleteAcc = null }
+    }
 }
 
 @Composable
@@ -770,6 +962,65 @@ fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     }
 }
 
+// ───────────── حذف حساب ─────────────
+@Composable
+fun DeleteAccountDialog(account: Account, others: List<Account>, onDismiss: () -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val dao = remember { AppDb.get(ctx).dao() }
+    var moveTo by remember { mutableLongStateOf(0L) } // 0 = حذف تراکنش‌ها همراه حساب
+    var count by remember { mutableIntStateOf(-1) }
+    LaunchedEffect(account.id) { count = dao.getAllTxns().count { it.accountId == account.id } }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(24.dp),
+        title = { Text("حذف حساب «${account.name}»", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (count >= 0) Text("این حساب ${toFa(count.toString())} تراکنش دارد.")
+                if (others.isNotEmpty()) {
+                    Text("با تراکنش‌های این حساب چه شود؟", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        FilterChip(
+                            selected = moveTo == 0L,
+                            onClick = { moveTo = 0L },
+                            label = { Text("حذف همراه حساب") },
+                            shape = RoundedCornerShape(50)
+                        )
+                        others.forEach { o ->
+                            FilterChip(
+                                selected = moveTo == o.id,
+                                onClick = { moveTo = o.id },
+                                label = { Text("انتقال به " + o.name) },
+                                shape = RoundedCornerShape(50)
+                            )
+                        }
+                    }
+                } else {
+                    Text("تراکنش‌های این حساب هم حذف می‌شوند.", color = Expense)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    scope.launch {
+                        if (moveTo != 0L) dao.moveTxns(account.id, moveTo) else dao.deleteTxnsOfAccount(account.id)
+                        dao.deleteAccountById(account.id)
+                        onDismiss()
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Expense)
+            ) { Text("حذف") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("انصراف") } }
+    )
+}
+
 // ───────────── ساخت / ویرایش حساب بانکی ─────────────
 @Composable
 fun AccountEditorDialog(account: Account?, onDismiss: () -> Unit) {
@@ -789,7 +1040,6 @@ fun AccountEditorDialog(account: Account?, onDismiss: () -> Unit) {
         )
     }
     var period by remember { mutableIntStateOf(if (account == null) 2 else 0) }
-    var confirmDel by remember { mutableStateOf(false) }
 
     val options = if (account == null) {
         listOf(1 to "همه تراکنش‌ها", 2 to "ابتدای این ماه", 3 to "از همین لحظه")
@@ -826,13 +1076,11 @@ fun AccountEditorDialog(account: Account?, onDismiss: () -> Unit) {
                     singleLine = true, shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
-                OutlinedTextField(
+                MoneyField(
                     value = opening,
-                    onValueChange = { opening = SmsParser.normalize(it).filter { c -> c.isDigit() } },
-                    label = { Text(if (toman) "موجودی اول دوره (تومان)" else "موجودی اول دوره (ریال)") },
-                    singleLine = true, shape = RoundedCornerShape(14.dp),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth()
+                    onValueChange = { opening = it },
+                    label = if (toman) "موجودی اول دوره (تومان)" else "موجودی اول دوره (ریال)",
+                    toman = toman
                 )
                 Text("شروع دوره از:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 FlowRow(
@@ -853,40 +1101,13 @@ fun AccountEditorDialog(account: Account?, onDismiss: () -> Unit) {
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.outline
                 )
-                if (account != null) {
-                    if (confirmDel) {
-                        Surface(color = Expense.copy(alpha = 0.10f), shape = RoundedCornerShape(14.dp)) {
-                            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text(
-                                    "حساب و همه‌ی تراکنش‌های آن حذف می‌شود. مطمئنی؟",
-                                    color = Expense, fontWeight = FontWeight.Medium, fontSize = 12.sp
-                                )
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    TextButton(onClick = { confirmDel = false }) { Text("خیر") }
-                                    Button(
-                                        onClick = {
-                                            scope.launch {
-                                                dao.deleteTxnsOfAccount(account.id)
-                                                dao.deleteAccountById(account.id)
-                                                onDismiss()
-                                            }
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Expense)
-                                    ) { Text("حذف حساب") }
-                                }
-                            }
-                        }
-                    } else {
-                        TextButton(onClick = { confirmDel = true }) { Text("🗑 حذف حساب", color = Expense) }
-                    }
-                }
             }
         },
         confirmButton = {
             TextButton(onClick = {
                 if (name.isNotBlank()) {
                     scope.launch {
-                        val v = SmsParser.normalize(opening).filter { it.isDigit() }.toLongOrNull() ?: 0L
+                        val v = opening.toLongOrNull() ?: 0L
                         val ob = if (toman) v * 10 else v
                         val ot = when (period) {
                             0 -> account?.openingTime ?: 0L
@@ -931,6 +1152,8 @@ fun ManualAddDialog(
     val toman = remember { Prefs.toman(ctx) }
     var amount by remember { mutableStateOf("") }
     var isIn by remember { mutableStateOf(false) }
+    var timeMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var showDate by remember { mutableStateOf(false) }
     var accountId by remember {
         mutableLongStateOf(if (defaultAccountId != 0L) defaultAccountId else accounts.firstOrNull()?.id ?: 0L)
     }
@@ -940,7 +1163,10 @@ fun ManualAddDialog(
         shape = RoundedCornerShape(24.dp),
         title = { Text("تراکنش دستی", fontWeight = FontWeight.Bold) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 if (accounts.isNotEmpty()) {
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -960,31 +1186,40 @@ fun ManualAddDialog(
                     FilterChip(selected = !isIn, onClick = { isIn = false }, label = { Text("برداشت") }, shape = RoundedCornerShape(50))
                     FilterChip(selected = isIn, onClick = { isIn = true }, label = { Text("واریز") }, shape = RoundedCornerShape(50))
                 }
-                OutlinedTextField(
+                MoneyField(
                     value = amount,
-                    onValueChange = { amount = SmsParser.normalize(it).filter { c -> c.isDigit() } },
-                    label = { Text(if (toman) "مبلغ (تومان)" else "مبلغ (ریال)") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    onValueChange = { amount = it },
+                    label = if (toman) "مبلغ (تومان)" else "مبلغ (ریال)",
+                    toman = toman
                 )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("📅 " + formatDate(timeMs))
+                    TextButton(onClick = { showDate = !showDate }) { Text(if (showDate) "بستن" else "تغییر تاریخ") }
+                }
+                if (showDate) DateTimeEditor(initial = timeMs) { timeMs = it }
             }
         },
         confirmButton = {
             TextButton(onClick = {
                 amount.toLongOrNull()?.let { v ->
-                    scope.launch {
-                        val rial = if (toman) v * 10 else v
-                        val id = AppDb.get(ctx).dao().insertTxn(
-                            Txn(
-                                type = if (isIn) "IN" else "OUT",
-                                amount = rial,
-                                sender = "manual",
-                                time = System.currentTimeMillis(),
-                                accountId = accountId
+                    if (v > 0) {
+                        scope.launch {
+                            val rial = if (toman) v * 10 else v
+                            val id = AppDb.get(ctx).dao().insertTxn(
+                                Txn(
+                                    type = if (isIn) "IN" else "OUT",
+                                    amount = rial,
+                                    sender = "manual",
+                                    time = timeMs,
+                                    accountId = accountId
+                                )
                             )
-                        )
-                        onCreated(id)
+                            onCreated(id)
+                        }
                     }
                 }
             }) { Text("ادامه") }

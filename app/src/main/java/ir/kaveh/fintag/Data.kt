@@ -88,6 +88,15 @@ interface AppDao {
 
     @Query("SELECT * FROM accounts WHERE id = :id")
     suspend fun getAccount(id: Long): Account?
+
+    @Query("UPDATE transactions SET accountId = :to WHERE accountId = :from")
+    suspend fun moveTxns(from: Long, to: Long)
+
+    @Query("SELECT * FROM transactions ORDER BY time ASC")
+    suspend fun getAllTxns(): List<Txn>
+
+    @Query("SELECT * FROM tags ORDER BY name ASC")
+    suspend fun getAllTags(): List<Tag>
 }
 
 @Database(entities = [Txn::class, Tag::class, Account::class], version = 2, exportSchema = false)
