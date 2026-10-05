@@ -109,9 +109,9 @@ private fun Bubble(id: Long) {
     var isIn by remember { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(id) { isIn = AppDb.get(ctx).dao().getTxn(id)?.isIn() }
     val color = when (isIn) {
-        true -> Color(0xFF2E7D32)
-        false -> Color(0xFFC62828)
-        null -> Color(0xFF00695C)
+        true -> Income
+        false -> Expense
+        null -> Teal
     }
     val symbol = when (isIn) {
         true -> "↓"
@@ -184,7 +184,7 @@ class OverlayService : Service() {
             textSize = 12f
             gravity = Gravity.CENTER
             background = GradientDrawable().apply {
-                setColor(0xFF00695C.toInt())
+                setColor(0xFF0F766E.toInt())
                 cornerRadius = 48f
             }
             visibility = View.GONE

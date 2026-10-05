@@ -48,7 +48,8 @@ object SmsParser {
 
         val balMatch = balRe.find(tl)
         val balRange = balMatch?.groups?.get(1)?.range
-               if (balance == null) return null
+        val balance = balMatch?.groups?.get(1)?.value?.let { toLong(it) }
+        if (balance == null) return null // بدون «مانده/موجودی» تراکنش حساب نمی‌شود (پیامک رمز پویا)
 
         val cands = numRe.findAll(tl)
             .filter { m -> balRange == null || m.range.first !in balRange }

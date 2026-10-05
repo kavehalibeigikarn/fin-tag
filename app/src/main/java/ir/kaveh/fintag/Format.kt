@@ -12,12 +12,26 @@ fun formatMoney(rial: Long, toman: Boolean): String {
     return s + if (toman) " تومان" else " ریال"
 }
 
-fun formatDate(ms: Long): String {
-    val f = android.icu.text.SimpleDateFormat(
-        "yyyy/MM/dd  HH:mm",
-        android.icu.util.ULocale("fa_IR@calendar=persian")
-    )
-    return f.format(java.util.Date(ms))
+private fun persianFormat(pattern: String) =
+    android.icu.text.SimpleDateFormat(pattern, android.icu.util.ULocale("fa_IR@calendar=persian"))
+
+fun formatDate(ms: Long): String = persianFormat("yyyy/MM/dd  HH:mm").format(java.util.Date(ms))
+
+fun formatDay(ms: Long): String = persianFormat("yyyy/MM/dd").format(java.util.Date(ms))
+
+fun formatTime(ms: Long): String = persianFormat("HH:mm").format(java.util.Date(ms))
+
+fun monthTitle(ms: Long = System.currentTimeMillis()): String =
+    persianFormat("MMMM yyyy").format(java.util.Date(ms))
+
+fun dayTitle(ms: Long): String {
+    val now = System.currentTimeMillis()
+    val key = formatDay(ms)
+    return when (key) {
+        formatDay(now) -> "امروز"
+        formatDay(now - 86_400_000L) -> "دیروز"
+        else -> persianFormat("EEEE d MMMM yyyy").format(java.util.Date(ms))
+    }
 }
 
 /** شروع ماه شمسی جاری */

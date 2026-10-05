@@ -48,6 +48,12 @@ interface AppDao {
 
     @Query("UPDATE tags SET useCount = useCount + 1 WHERE name = :name")
     suspend fun bumpTag(name: String)
+
+    @Query("DELETE FROM tags WHERE name = :name")
+    suspend fun deleteTag(name: String)
+
+    @Query("DELETE FROM transactions WHERE id = :id")
+    suspend fun deleteTxnById(id: Long)
 }
 
 @Database(entities = [Txn::class, Tag::class], version = 1, exportSchema = false)
