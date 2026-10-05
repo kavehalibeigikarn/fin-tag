@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+fun TxnEditor(txnId: Long, onFinish: () -> Unit) {
 
 package ir.kaveh.fintag
 
