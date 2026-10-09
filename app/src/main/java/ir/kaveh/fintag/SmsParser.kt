@@ -6,8 +6,15 @@ package ir.kaveh.fintag
  */
 object SmsParser {
     data class Parsed(val isIn: Boolean, val amountRial: Long, val balanceRial: Long?)
+    data class ParseResult(val parsed: Parsed?, val reason: String)
 
-    private val ignoreWords = listOf("رمز", "کد تایید", "کد تأیید", "کد فعال", "otp", "cvv2", "password")
+    // پیامک رمز/کد تأیید؛ فقط وقتی «مانده» ندارد رد می‌شود (اگر مانده داشت، تراکنش واقعی است)
+    private val otpRe = Regex(
+        """(رمز\s*(پویا|دوم|یک\s*بار|یکبار|ورود|عبور|اینترنتی|پیامکی)|رمز\s*[:：]?\s*\d{4,8}|کد\s*(تایید|تأیید|فعال\s*سازی|فعال‌سازی|امنیتی|یکبار|یک\s*بار)|\botp\b|cvv2?|password)""",
+        RegexOption.IGNORE_CASE
+    )
+    private val financialRe = Regex("ریال|تومان|مانده|موجودی|برداشت|واریز|خرید|پرداخت|حواله|کارمزد|deposit|withdraw|balance|purchase")
+
     private val inKeys = listOf("واریز", "دریافت", "افزایش", "وارد شد", "انتقال از", "deposit", "credit", "received")
     private val outKeys = listOf("برداشت", "خرید", "پرداخت", "کسر", "قبض", "انتقال به", "withdraw", "debit", "purchase", "paid", "payment")
 
@@ -27,7 +34,7 @@ object SmsParser {
                 when (ch) {
                     in '۰'..'۹' -> '0' + (ch - '۰')
                     in '٠'..'٩' -> '0' + (ch - '٠')
-                    '٬', '،' -> ','
+                    '٬', '،', '٫' -> ','
                     'ي' -> 'ی'
                     'ك' -> 'ک'
                     else -> ch
@@ -39,26 +46,37 @@ object SmsParser {
 
     private fun toLong(s: String): Long? = s.replace(",", "").toLongOrNull()
 
-    fun parse(raw: String): Parsed? {
-        val t0 = normalize(raw)
-        val lower0 = t0.lowercase()
-        if (ignoreWords.any { lower0.contains(it) }) return null
+    /** آیا این پیامک ارزش نمایش در فهرست عیب‌یابی را دارد؟ (پیامک رمز یکبار مصرف ذخیره نمی‌شود) */
+    fun shouldLog(raw: String): Boolean {
+        val t = normalize(raw)
+        val l = t.lowercase()
+        if (!t.any { it.isDigit() } || !financialRe.containsMatchIn(l)) return false
+        if (otpRe.containsMatchIn(t) && !balRe.containsMatchIn(l)) return false
+        return true
+    }
 
+    fun parse(raw: String, requireBalance: Boolean = true): Parsed? = parseDetailed(raw, requireBalance).parsed
+
+    fun parseDetailed(raw: String, requireBalance: Boolean = true): ParseResult {
+        val t0 = normalize(raw)
         val tl = t0.replace(dateRe, " ").replace(timeRe, " ").replace(maskRe, " ").lowercase()
 
         val balMatch = balRe.find(tl)
         val balRange = balMatch?.groups?.get(1)?.range
         val balance = balMatch?.groups?.get(1)?.value?.let { toLong(it) }
-        if (balance == null) return null // بدون «مانده/موجودی» تراکنش حساب نمی‌شود (پیامک رمز پویا)
+        if (balance == null) {
+            if (otpRe.containsMatchIn(t0)) return ParseResult(null, "پیامک رمز/کد تأیید است")
+            if (requireBalance) return ParseResult(null, "عدد «مانده/موجودی» در پیامک پیدا نشد")
+        }
 
         val cands = numRe.findAll(tl)
             .filter { m -> balRange == null || m.range.first !in balRange }
             .toList()
         val chosen = cands.firstOrNull { it.value.contains(',') }
             ?: cands.firstOrNull { it.value.length in 4..9 }
-            ?: return null
-        val amount = toLong(chosen.value) ?: return null
-        if (amount <= 0) return null
+            ?: return ParseResult(null, "مبلغ تراکنش در پیامک پیدا نشد")
+        val amount = toLong(chosen.value)
+        if (amount == null || amount <= 0) return ParseResult(null, "مبلغ تراکنش خوانده نشد")
 
         val inIdx = inKeys.map { tl.indexOf(it) }.filter { it >= 0 }.minOrNull()
         val outIdx = outKeys.map { tl.indexOf(it) }.filter { it >= 0 }.minOrNull()
@@ -72,12 +90,12 @@ object SmsParser {
                 when {
                     after == '+' || before == '+' -> true
                     after == '-' || before == '-' -> false
-                    else -> return null
+                    else -> return ParseResult(null, "واریز یا برداشت بودن مشخص نشد (کلمه‌ی واریز/برداشت/خرید یا علامت +/- نبود)")
                 }
             }
         }
 
         val mult = if (tl.contains("تومان")) 10L else 1L
-        return Parsed(isIn, amount * mult, balance?.times(mult))
+        return ParseResult(Parsed(isIn, amount * mult, balance?.times(mult)), "")
     }
 }

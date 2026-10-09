@@ -35,7 +35,8 @@ object Notifier {
             .setContentTitle(title)
             .setContentText(formatMoney(amount, Prefs.toman(ctx)) + " — برای افزودن توضیح و تگ لمس کنید")
             .setContentIntent(pi)
-            .setAutoCancel(true)
+            .setOngoing(true)       // تا وقتی توضیح/تگ ذخیره نشده، اعلان می‌ماند
+            .setAutoCancel(false)
             .build()
         nm.notify(id.toInt(), n)
     }
@@ -46,6 +47,12 @@ object Notifier {
 }
 
 object Pipeline {
+    private suspend fun log(dao: AppDao, sender: String, body: String, time: Long, status: String, reason: String) {
+        if (sender == "TEST") return
+        dao.insertLog(SmsLog(time = time, sender = sender, body = body.take(600), status = status, reason = reason))
+        dao.pruneLog()
+    }
+
     /** پیامک را تحلیل می‌کند؛ اگر تراکنش بود به حساب مربوط نسبت داده، ذخیره و آیکون/اعلان نشان می‌دهد. */
     suspend fun handle(
         ctx: Context,
@@ -53,11 +60,21 @@ object Pipeline {
         body: String,
         time: Long,
         force: Boolean = false,
-        forceAccountId: Long? = null
+        forceAccountId: Long? = null,
+        relaxedOverride: Boolean? = null
     ): Long? {
-        val parsed = SmsParser.parse(body) ?: return null
         val dao = AppDb.get(ctx).dao()
-        if (!force && dao.recentDup(body, time - 60_000) > 0) return null
+        val relaxed = relaxedOverride ?: Prefs.relaxed(ctx)
+        val res = SmsParser.parseDetailed(body, requireBalance = !relaxed)
+        val parsed = res.parsed
+        if (parsed == null) {
+            if (SmsParser.shouldLog(body)) log(dao, sender, body, time, "ردشد", res.reason)
+            return null
+        }
+        if (!force && dao.recentDup(body, time - 20_000) > 0) {
+            log(dao, sender, body, time, "تکراری", "همین پیامک چند ثانیه‌ی پیش ثبت شده بود")
+            return null
+        }
 
         var accountName = ""
         val id = Accounts.lock.withLock {
@@ -76,6 +93,7 @@ object Pipeline {
                 )
             )
         }
+        log(dao, sender, body, time, "ثبت شد", if (accountName.isNotBlank()) "حساب: $accountName" else "")
         withContext(Dispatchers.Main) {
             Notifier.show(ctx, id, parsed.isIn, parsed.amountRial, accountName)
             if (Prefs.popup(ctx) && Settings.canDrawOverlays(ctx)) {

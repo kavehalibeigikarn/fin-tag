@@ -23,7 +23,18 @@ class SmsReceiver : BroadcastReceiver() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 Pipeline.handle(app, sender, body, time)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                try {
+                    if (SmsParser.shouldLog(body)) {
+                        AppDb.get(app).dao().insertLog(
+                            SmsLog(
+                                time = time, sender = sender, body = body.take(600), status = "خطا",
+                                reason = e.javaClass.simpleName + ": " + (e.message ?: "")
+                            )
+                        )
+                    }
+                } catch (_: Exception) {
+                }
             } finally {
                 pending.finish()
             }

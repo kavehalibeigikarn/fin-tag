@@ -12,6 +12,7 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -192,6 +193,7 @@ fun MainScreen(tick: Int) {
         }
     }
 
+    Box(Modifier.fillMaxSize()) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
@@ -229,13 +231,16 @@ fun MainScreen(tick: Int) {
         }
     }
 
+    // فرم ویرایش داخل خود صفحه نشان داده می‌شود (نه Dialog) تا دکمه‌ها بالای نوار دکمه‌های اندروید بمانند
     editId?.let { id ->
-        Dialog(
-            onDismissRequest = { editId = null },
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
-        ) {
-            Box(Modifier.safeDrawingPadding().padding(16.dp)) { TxnEditor(id, full = true) { editId = null } }
+        BackHandler { editId = null }
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f))) {
+            Box(
+                Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 14.dp, vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) { TxnEditor(id, full = true) { editId = null } }
         }
+    }
     }
     if (showAdd) {
         ManualAddDialog(
@@ -688,6 +693,8 @@ fun SettingsTab(
     val dao = remember { AppDb.get(ctx).dao() }
     val tags by dao.observeTags().collectAsState(initial = emptyList())
     var popup by remember { mutableStateOf(Prefs.popup(ctx)) }
+    var relaxed by remember { mutableStateOf(Prefs.relaxed(ctx)) }
+    val smsLog by dao.observeLog().collectAsState(initial = emptyList())
     var permTick by remember { mutableIntStateOf(0) }
     var newTagName by remember { mutableStateOf("") }
     var editAcc by remember { mutableStateOf<Account?>(null) }
@@ -845,6 +852,20 @@ fun SettingsTab(
                 },
                 shape = RoundedCornerShape(14.dp)
             ) { Text("باز کردن تنظیمات برنامه") }
+            OutlinedButton(
+                onClick = {
+                    try {
+                        ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                    } catch (_: Exception) {
+                    }
+                },
+                shape = RoundedCornerShape(14.dp)
+            ) { Text("بدون محدودیت باتری (برای ثبت مطمئن پیامک‌ها)") }
+            Text(
+                "برای اینکه اندروید برنامه را در پس‌زمینه نبندد، در لیست باز‌شده «FinTag/مدیریت مالی» را روی «Don't optimize / بدون محدودیت» بگذار.",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.outline
+            )
             Text(
                 "اگر اندروید گزینه‌ی پیامک را مسدود کرد: تنظیمات برنامه ← منوی سه‌نقطه ← «Allow restricted settings» و سپس دوباره مجوز را بدهید.",
                 fontSize = 11.sp,
@@ -855,6 +876,49 @@ fun SettingsTab(
         SectionCard("نمایش") {
             SwitchRow("آیکون شناور هنگام دریافت پیامک", popup) { popup = it; Prefs.setPopup(ctx, it) }
             SwitchRow("نمایش مبالغ به تومان (خاموش = ریال)", toman) { Prefs.setToman(ctx, it); onToman(it) }
+            SwitchRow("پیامک بدون «مانده» هم ثبت شود (پیامک‌های رمز/کد همچنان رد می‌شوند)", relaxed) {
+                relaxed = it; Prefs.setRelaxed(ctx, it)
+            }
+        }
+
+        SectionCard("پیامک‌های دیده‌شده (عیب‌یابی)") {
+            Text(
+                "اگر تراکنشی ثبت نشد، اینجا می‌بینی پیامکش رسیده یا نه و چرا رد شده. برای پیامکِ ردشده می‌توانی دستی «ثبت» بزنی.",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.outline
+            )
+            if (smsLog.isEmpty()) Text("هنوز پیامک مالی دیده نشده.", fontSize = 12.sp)
+            smsLog.take(15).forEach { l ->
+                val c = when (l.status) { "ثبت شد" -> Income; "ردشد", "خطا" -> Expense; else -> MaterialTheme.colorScheme.outline }
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(l.status, color = c, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        Text(formatDate(l.time) + "  •  " + l.sender, fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                    }
+                    if (l.reason.isNotBlank()) Text(l.reason, fontSize = 11.sp, color = c)
+                    Text(l.body, fontSize = 11.sp, maxLines = 3, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (l.status == "ردشد" || l.status == "خطا") {
+                        TextButton(onClick = {
+                            scope.launch {
+                                val r = withContext(Dispatchers.IO) {
+                                    Pipeline.handle(
+                                        ctx.applicationContext, l.sender, l.body, l.time,
+                                        force = true, relaxedOverride = true
+                                    )
+                                }
+                                Toast.makeText(
+                                    ctx, if (r != null) "ثبت شد" else "قابل تشخیص نبود؛ از «تراکنش جدید» دستی ثبت کن",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }) { Text("ثبت به‌عنوان تراکنش") }
+                    }
+                }
+                HorizontalDivider()
+            }
+            if (smsLog.isNotEmpty()) {
+                TextButton(onClick = { scope.launch { dao.clearLog() } }) { Text("پاک کردن فهرست", color = Expense) }
+            }
         }
 
         SectionCard("مدیریت تگ‌ها") {

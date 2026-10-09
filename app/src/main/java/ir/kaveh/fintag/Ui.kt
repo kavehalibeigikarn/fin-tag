@@ -388,7 +388,7 @@ fun TxnEditor(
             accountId = it.accountId
             timeMs = it.time
             amountText = (if (toman) it.amount / 10 else it.amount).toString()
-        }
+        } ?: onFinish()
     }
 
     // تگ جدید همان لحظه در لیست تگ‌ها ذخیره می‌شود

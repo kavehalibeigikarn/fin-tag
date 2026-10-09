@@ -1,10 +1,15 @@
 package ir.kaveh.fintag
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -140,6 +145,11 @@ class OverlayService : Service() {
         var savedY: Int
     )
 
+    private companion object {
+        const val FG_CH = "overlay_fg"
+        const val FG_ID = 7001
+    }
+
     private val holders = HashMap<Long, Holder>()
     private lateinit var wm: WindowManager
     private val handler = Handler(Looper.getMainLooper())
@@ -217,6 +227,7 @@ class OverlayService : Service() {
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
         }
         val h = Holder(root, strip, cv, owner, lp, expanded, lp.x, lp.y)
+        val maxHeightDp = (dm.heightPixels * 0.78f / d).dp
 
         root.setViewTreeLifecycleOwner(owner)
         root.setViewTreeSavedStateRegistryOwner(owner)
@@ -226,7 +237,7 @@ class OverlayService : Service() {
         cv.setContent {
             AppTheme {
                 if (expanded.value) {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Column(Modifier.heightIn(max = maxHeightDp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 4.dp) {
                             Row(
                                 Modifier.fillMaxWidth().padding(horizontal = 4.dp),
@@ -252,6 +263,31 @@ class OverlayService : Service() {
             holders[id] = h
         } catch (e: Exception) {
             owner.destroy()
+        }
+        if (holders.isNotEmpty()) startAsForeground()
+    }
+
+    /** سرویس را «پیش‌زمینه» می‌کند تا اندروید آیکون شناور را بعد از مدتی نبندد. */
+    private fun startAsForeground() {
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            if (nm.getNotificationChannel(FG_CH) == null) {
+                nm.createNotificationChannel(
+                    NotificationChannel(FG_CH, "آیکون شناور تراکنش", NotificationManager.IMPORTANCE_LOW)
+                )
+            }
+            val n = Notification.Builder(this, FG_CH)
+                .setSmallIcon(R.drawable.ic_stat)
+                .setContentTitle("تراکنش در انتظار توضیح و تگ")
+                .setContentText("آیکون شناور را لمس کن تا توضیح و تگ را ثبت کنی")
+                .setOngoing(true)
+                .build()
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(FG_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                startForeground(FG_ID, n)
+            }
+        } catch (_: Exception) {
         }
     }
 

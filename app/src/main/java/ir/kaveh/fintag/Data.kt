@@ -38,8 +38,30 @@ data class Account(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+/** فهرست پیامک‌های مالی که برنامه دیده (برای عیب‌یابی: چرا ثبت شد یا نشد) */
+@Entity(tableName = "sms_log")
+data class SmsLog(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val time: Long,
+    val sender: String,
+    val body: String,
+    val status: String,   // «ثبت شد» / «ردشد» / «تکراری» / «خطا»
+    val reason: String
+)
+
 @Dao
 interface AppDao {
+    @Insert suspend fun insertLog(l: SmsLog): Long
+
+    @Query("SELECT * FROM sms_log ORDER BY time DESC, id DESC LIMIT 60")
+    fun observeLog(): Flow<List<SmsLog>>
+
+    @Query("DELETE FROM sms_log WHERE id NOT IN (SELECT id FROM sms_log ORDER BY time DESC, id DESC LIMIT 60)")
+    suspend fun pruneLog()
+
+    @Query("DELETE FROM sms_log")
+    suspend fun clearLog()
+
     @Insert suspend fun insertTxn(t: Txn): Long
     @Update suspend fun updateTxn(t: Txn)
     @Delete suspend fun deleteTxn(t: Txn)
@@ -99,7 +121,7 @@ interface AppDao {
     suspend fun getAllTags(): List<Tag>
 }
 
-@Database(entities = [Txn::class, Tag::class, Account::class], version = 2, exportSchema = false)
+@Database(entities = [Txn::class, Tag::class, Account::class, SmsLog::class], version = 3, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun dao(): AppDao
 
@@ -120,11 +142,21 @@ abstract class AppDb : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sms_log` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`time` INTEGER NOT NULL, `sender` TEXT NOT NULL, `body` TEXT NOT NULL, " +
+                        "`status` TEXT NOT NULL, `reason` TEXT NOT NULL)"
+                )
+            }
+        }
+
         @Volatile private var instance: AppDb? = null
 
         fun get(ctx: Context): AppDb = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(ctx.applicationContext, AppDb::class.java, "fintag.db")
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .addCallback(object : RoomDatabase.Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) {
                         DEFAULT_TAGS.forEach {
@@ -143,4 +175,6 @@ object Prefs {
     fun setToman(c: Context, v: Boolean) = sp(c).edit().putBoolean("toman", v).apply()
     fun popup(c: Context) = sp(c).getBoolean("popup", true)
     fun setPopup(c: Context, v: Boolean) = sp(c).edit().putBoolean("popup", v).apply()
+    fun relaxed(c: Context) = sp(c).getBoolean("relaxed", false)
+    fun setRelaxed(c: Context, v: Boolean) = sp(c).edit().putBoolean("relaxed", v).apply()
 }
